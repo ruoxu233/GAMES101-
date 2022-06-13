@@ -204,6 +204,8 @@ void rst::rasterizer::draw(std::vector<Triangle *> &TriangleList) {
             vec.z()/=vec.w();
         }
 
+        // should be exactly the same as view * model
+        // so what's the meaning of this point
         Eigen::Matrix4f inv_trans = (view * model).inverse().transpose();
         Eigen::Vector4f n[] = {
                 inv_trans * to_vec4(t->normal[0], 0.0f),
@@ -280,6 +282,51 @@ void rst::rasterizer::rasterize_triangle(const Triangle& t, const std::array<Eig
     // Use: Instead of passing the triangle's color directly to the frame buffer, pass the color to the shaders first to get the final color;
     // Use: auto pixel_color = fragment_shader(payload);
 
+    auto v = t.toVector4();
+    
+    // get the bounding box
+    float x1 = t.v[0].x(), y1 = t.v[0].y();
+    float x2 = x1, y2 = y1;
+    for (int i = 0; i < 3; i++) {
+        x1 = std::min(x1, t.v[i].x());
+        x2 = std::max(x2, t.v[i].x());
+        y1 = std::min(y1, t.v[i].y());
+        y2 = std::max(y2, t.v[i].y());
+    }
+
+    for (int y = int(y1); y <= int(y2 + 1); y++) {
+        for (int x = int(x1); x <= int(x2 + 1); x++) {
+            if (insideTriangle(x, y, t.v)) {
+                auto[alpha, beta, gamma] = computeBarycentric2D(x, y, t.v);
+                float w_reciprocal = 1.0/(alpha / v[0].w() + beta / v[1].w() + gamma / v[2].w());
+                float z_interpolated = alpha * v[0].z() / v[0].w() + beta * v[1].z() / v[1].w() + gamma * v[2].z() / v[2].w();
+                z_interpolated *= w_reciprocal;
+
+                int dep_index = get_index(x, y);
+                if (z_interpolated < depth_buf[dep_index]) {
+                    depth_buf[dep_index] = z_interpolated;
+                    
+                    Vector3f color_interpolated = alpha * t.color[0] / v[0].w() + beta * t.color[1] / v[1].w() + gamma * t.color[2] / v[2].w();
+                    color_interpolated *= w_reciprocal;
+
+                    Vector3f normal_interpolated = alpha * t.normal[0] / v[0].w() + beta * t.normal[1] / v[1].w() + gamma * t.normal[2] / v[2].w();
+                    normal_interpolated *= w_reciprocal;
+                    normal_interpolated = normal_interpolated.normalized();
+
+                    Vector2f tex_coor_interpolated = alpha * t.tex_coords[0] / v[0].w() + beta * t.tex_coords[1] / v[1].w() + gamma * t.tex_coords[2] / v[2].w();
+                    tex_coor_interpolated *= w_reciprocal;
+
+                    Vector3f view_coor_interpolated = alpha * view_pos[0] + beta * view_pos[1] + gamma * view_pos[2];
+
+                    fragment_shader_payload payload(color_interpolated, normal_interpolated, tex_coor_interpolated, texture ? &*texture : nullptr);
+                    payload.view_pos = view_coor_interpolated;
+
+                    auto color = fragment_shader(payload);
+                    set_pixel(Vector2i(x, y), color);
+                }
+            }
+        }
+    }
  
 }
 
